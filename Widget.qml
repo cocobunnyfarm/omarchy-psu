@@ -43,6 +43,13 @@ BarWidget {
   property real dC: 0
   property real dVL: 0
   property real dCL: 0
+  // 메인 뷰 편집 버퍼 — 스테퍼는 통신 없이 이 값만 바꾸고,
+  // '적용'을 눌러야 바뀐 값들이 한 번의 연결로 전송된다 (psu set)
+  property real eV: 0
+  property real eC: 0
+  property real eVL: 0
+  property real eCL: 0
+  property bool editing: false
   readonly property bool busy: actionProc.running
   readonly property var profileNames: Object.keys(profiles)
 
@@ -69,6 +76,12 @@ BarWidget {
       vlim = s.set.vlim || 0
       clim = s.set.clim || 0
       model = String(s.idn).split(",")[1] || ""
+      if (!editing) {
+        eV = setV
+        eC = setC
+        eVL = vlim
+        eCL = clim
+      }
     } catch (e) {
       connected = false
     }
@@ -173,7 +186,26 @@ BarWidget {
     scanDone = false
     lastError = ""
     confirmDelete = ""
+    editing = false
     refreshNow()
+  }
+
+  function applyEdits() {
+    var args = ["set"]
+    if (Math.abs(eV - setV) > 0.001) args.push("--volt", eV.toFixed(2))
+    if (Math.abs(eC - setC) > 0.001) args.push("--curr", eC.toFixed(2))
+    if (Math.abs(eVL - vlim) > 0.001) args.push("--vlim", eVL.toFixed(2))
+    if (Math.abs(eCL - clim) > 0.001) args.push("--clim", eCL.toFixed(2))
+    editing = false
+    if (args.length > 1) runAction(args)
+  }
+
+  function cancelEdits() {
+    eV = setV
+    eC = setC
+    eVL = vlim
+    eCL = clim
+    editing = false
   }
   function close() { panelOpen = false }
   function togglePanel() { panelOpen ? close() : open() }
@@ -248,6 +280,7 @@ BarWidget {
     property string value: ""
     property real step: 0
     property bool dimmed: false
+    property bool highlight: false   // 편집 중(기기 값과 다름) 표시
     signal adjust(real delta)
 
     width: parent.width
@@ -270,11 +303,12 @@ BarWidget {
       Text {
         anchors.verticalCenter: parent.verticalCenter
         text: parent.parent.value
-        color: parent.parent.dimmed ? Qt.darker(Color.foreground, 1.3)
-                                    : Color.foreground
+        color: parent.parent.highlight ? Color.accent
+             : parent.parent.dimmed ? Qt.darker(Color.foreground, 1.3)
+             : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
-        font.bold: !parent.parent.dimmed
+        font.bold: !parent.parent.dimmed || parent.parent.highlight
       }
 
       ActionChip { label: "−"; onActivated: parent.parent.adjust(-parent.parent.step) }
@@ -437,41 +471,74 @@ BarWidget {
               }
             }
 
+            // 스테퍼는 로컬 버퍼만 조정 — 통신 없음. '적용'으로 일괄 전송.
             ValueRow {
               caption: "전압"
-              value: root.setV.toFixed(2) + " V"
+              value: root.eV.toFixed(2) + " V"
               step: 0.1
+              highlight: Math.abs(root.eV - root.setV) > 0.001
               onAdjust: function(delta) {
-                root.runAction(["volt", (root.setV + delta).toFixed(2)])
+                root.eV = Math.max(0, root.eV + delta)
+                root.editing = true
               }
             }
 
             ValueRow {
               caption: "전류 제한"
-              value: root.setC.toFixed(2) + " A"
+              value: root.eC.toFixed(2) + " A"
               step: 0.1
+              highlight: Math.abs(root.eC - root.setC) > 0.001
               onAdjust: function(delta) {
-                root.runAction(["curr", (root.setC + delta).toFixed(2)])
+                root.eC = Math.max(0, root.eC + delta)
+                root.editing = true
               }
             }
 
             ValueRow {
               caption: "전압 리밋"
-              value: root.vlim.toFixed(1) + " V"
+              value: root.eVL.toFixed(1) + " V"
               step: 0.1
               dimmed: true
+              highlight: Math.abs(root.eVL - root.vlim) > 0.001
               onAdjust: function(delta) {
-                root.runAction(["vlim", (root.vlim + delta).toFixed(2)])
+                root.eVL = Math.max(0, root.eVL + delta)
+                root.editing = true
               }
             }
 
             ValueRow {
               caption: "전류 리밋"
-              value: root.clim.toFixed(1) + " A"
+              value: root.eCL.toFixed(1) + " A"
               step: 0.1
               dimmed: true
+              highlight: Math.abs(root.eCL - root.clim) > 0.001
               onAdjust: function(delta) {
-                root.runAction(["clim", (root.clim + delta).toFixed(2)])
+                root.eCL = Math.max(0, root.eCL + delta)
+                root.editing = true
+              }
+            }
+
+            Item {
+              visible: root.editing
+              width: parent.width
+              height: Style.space(26)
+
+              Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "변경 대기 중"
+                color: Color.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Row {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(6)
+
+                ActionChip { label: "적용"; onActivated: root.applyEdits() }
+                ActionChip { label: "취소"; onActivated: root.cancelEdits() }
               }
             }
 

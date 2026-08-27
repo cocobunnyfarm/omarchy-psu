@@ -14,7 +14,13 @@
       "vlim": 14.2,
       "clim": 9.2,
       "note": "로버 13.8V 계통"
+    },
+    "TEST": {
+      "volt": 10.0,
+      "curr": 10.0,
+      "vlim": 10.0,
+      "clim": 10.0
     }
   },
-  "last_profile": "ROVER"
+  "last_profile": "TEST"
 }

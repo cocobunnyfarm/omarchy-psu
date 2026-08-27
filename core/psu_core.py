@@ -23,7 +23,11 @@ except ImportError:
 
 
 class PsuError(Exception):
-    """통신/잠금 실패."""
+    """통신 실패."""
+
+
+class PortBusy(PsuError):
+    """포트를 다른 프로세스가 잠금 — 일시적, 재시도 가치 있음."""
 
 
 class _PySerialTransport:
@@ -34,7 +38,10 @@ class _PySerialTransport:
         try:
             self._s = _pyserial.Serial(port, baud, **kwargs)
         except Exception as e:
-            raise PsuError(str(e)) from e
+            msg = str(e)
+            if "busy" in msg.lower() or "exclusive" in msg.lower():
+                raise PortBusy(f"{port} 사용 중 (다른 프로세스가 잠금)") from e
+            raise PsuError(msg) from e
 
     def write(self, data):
         self._s.write(data)
@@ -67,7 +74,7 @@ class _TermiosTransport:
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             os.close(self.fd)
-            raise PsuError(f"{port} 사용 중 (다른 프로세스가 잠금)") from None
+            raise PortBusy(f"{port} 사용 중 (다른 프로세스가 잠금)") from None
         a = termios.tcgetattr(self.fd)
         a[0] = 0
         a[1] = 0
@@ -93,12 +100,22 @@ class _TermiosTransport:
         os.close(self.fd)
 
 
-def open_transport(port, baud):
-    if _pyserial is not None:
-        return _PySerialTransport(port, baud)
-    if os.name != "posix":
-        raise PsuError("pyserial이 필요합니다: pip install pyserial")
-    return _TermiosTransport(port, baud)
+def open_transport(port, baud, wait_lock=2.0):
+    """포트 열기. 다른 프로세스가 잠근 상태(폴링과 수동 명령의 순간 경합)면
+    wait_lock 초까지 재시도 — 경합은 항상 1초 미만이라 사용자에게 잠금
+    에러가 노출되는 일을 없앤다."""
+    deadline = time.time() + wait_lock
+    while True:
+        try:
+            if _pyserial is not None:
+                return _PySerialTransport(port, baud)
+            if os.name != "posix":
+                raise PsuError("pyserial이 필요합니다: pip install pyserial")
+            return _TermiosTransport(port, baud)
+        except PortBusy:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.15)
 
 
 class OwonSPE:
@@ -225,18 +242,14 @@ def probe(port, baud=DEFAULT_BAUD, wait=0.6):
         psu.close()
 
 
-def apply_profile(psu, p, force=False):
-    """프로필(volt/curr/vlim/clim)을 안전한 순서로 적용.
+def apply_values(psu, p):
+    """volt/curr/vlim/clim 네 값을 리밋·설정값 상호 제약을 피하는 순서로 적용.
 
-    - 기본적으로 출력이 ON이면 거부 (부하에 실시간 전압 변화가 가해짐)
-    - 리밋/설정값 상호 제약 회피 순서:
-      1) 현재 리밋 안에 드는 설정값 먼저 (리밋을 낮추기 전에 설정값부터)
-      2) 리밋을 목표값으로
-      3) 설정값 최종 확정 (리밋을 올린 뒤에야 가능한 값 포함)
-    - 출력은 절대 자동으로 켜지 않는다.
+    1) 현재 리밋 안에 드는 설정값 먼저 (리밋을 낮추기 전에 설정값부터)
+    2) 리밋을 목표값으로
+    3) 설정값 최종 확정 (리밋을 올린 뒤에야 가능한 값 포함)
+    출력은 절대 건드리지 않는다.
     """
-    if not force and psu.output():
-        raise PsuError("출력이 ON 상태 — 끄고 적용하거나 force를 사용하세요")
     cur_vlim = psu._qf("VOLT:LIM?") or float("inf")
     cur_clim = psu._qf("CURR:LIM?") or float("inf")
     if p["volt"] <= cur_vlim:
@@ -247,3 +260,11 @@ def apply_profile(psu, p, force=False):
     psu.set_current_limit(p["clim"])
     psu.set_voltage(p["volt"])
     psu.set_current(p["curr"])
+
+
+def apply_profile(psu, p, force=False):
+    """프로필 적용. 출력이 ON이면 기본 거부 (부하에 실시간 전압 변화가
+    가해지므로 — 명시적 force로만 무시). 출력은 자동으로 켜지지 않는다."""
+    if not force and psu.output():
+        raise PsuError("출력이 ON 상태 — 끄고 적용하거나 force를 사용하세요")
+    apply_values(psu, p)

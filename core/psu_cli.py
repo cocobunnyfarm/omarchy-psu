@@ -26,7 +26,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psu_config  # noqa: E402
-from psu_core import OwonSPE, PsuError, apply_profile, probe  # noqa: E402
+from psu_core import (OwonSPE, PsuError, apply_profile, apply_values,  # noqa: E402
+                      probe)
 
 
 def open_psu(cfg, args):
@@ -225,6 +226,10 @@ def main():
     pd = pfsub.add_parser("delete")
     pd.add_argument("name")
 
+    se = sub.add_parser("set", help="여러 값을 한 번의 연결로 적용 (안전 순서)")
+    for f in ("volt", "curr", "vlim", "clim"):
+        se.add_argument(f"--{f}", type=float, default=None)
+
     sub.add_parser("on", help="출력 ON")
     sub.add_parser("off", help="출력 OFF")
     sub.add_parser("toggle", help="출력 토글")
@@ -252,7 +257,22 @@ def main():
 
         psu, _ = open_psu(cfg, args)
         with psu:
-            if args.cmd == "on":
+            if args.cmd == "set":
+                # 편집 버퍼 일괄 적용용: 지정 안 한 값은 현재 값 유지.
+                # 라이브 튜닝이 목적이므로 출력 ON 여부는 확인하지 않는다
+                # (명시적 '적용' 행동 자체가 의도 표현).
+                given = {k: getattr(args, k) for k in ("volt", "curr", "vlim", "clim")}
+                if all(v is None for v in given.values()):
+                    print("오류: --volt/--curr/--vlim/--clim 중 하나 이상 필요",
+                          file=sys.stderr)
+                    sys.exit(2)
+                cur = psu.status()["set"]
+                target = {k: (given[k] if given[k] is not None else cur[k])
+                          for k in given}
+                apply_values(psu, target)
+                print(f"적용됨: {target['volt']}V/{target['curr']}A "
+                      f"(리밋 {target['vlim']}V/{target['clim']}A)")
+            elif args.cmd == "on":
                 psu.set_output(True)
                 print("출력 ON")
             elif args.cmd == "off":
