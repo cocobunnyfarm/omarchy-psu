@@ -55,6 +55,17 @@ def cmd_status(cfg, args):
         base.update(s)
     except PsuError as e:
         base["error"] = str(e)
+    # active_profile: 기기의 현재 설정값이 마지막 적용 프로필과 일치할 때만.
+    # 수동으로 하나라도 바꾸면 불일치 → null (= 자유 모드). 프로필이 저절로
+    # 덮어써지는 경로는 없다 — 저장은 오직 명시적 `profile save <이름>` 뿐.
+    base["active_profile"] = None
+    lp = cfg.get("last_profile")
+    prof = cfg["profiles"].get(lp) if lp else None
+    if base["connected"] and prof:
+        s = base["set"]
+        if all(s.get(k) is not None and abs(s[k] - prof[k]) <= 0.02
+               for k in ("volt", "curr", "vlim", "clim")):
+            base["active_profile"] = lp
     if args.json:
         print(json.dumps(base, ensure_ascii=False))
     elif not base["connected"]:

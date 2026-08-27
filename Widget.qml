@@ -34,8 +34,15 @@ BarWidget {
   property string lastError: ""
   property var scanResults: []
   property bool scanDone: false
-  property string view: "main"        // "main" | "profiles" | "devices"
+  property string view: "main"        // "main" | "profiles" | "devices" | "newProfile"
   property string confirmDelete: ""   // 삭제 2단계 확인 중인 프로필 이름
+  property string activeProfile: ""   // 기기 값과 일치하는 프로필 (없으면 자유 모드)
+  property bool confirmOverwrite: false
+  // 새 프로필 드래프트 — 기기를 건드리지 않는 로컬 값
+  property real dV: 0
+  property real dC: 0
+  property real dVL: 0
+  property real dCL: 0
   readonly property bool busy: actionProc.running
   readonly property var profileNames: Object.keys(profiles)
 
@@ -44,6 +51,7 @@ BarWidget {
       var s = JSON.parse(text)
       profiles = s.profiles || {}
       lastProfile = s.last_profile || ""
+      activeProfile = s.active_profile || ""
       deviceAlias = (s.device && s.device.alias) ? s.device.alias : ""
       deviceId = (s.device && s.device.id) ? s.device.id : ""
       if (!s.connected) {
@@ -82,6 +90,18 @@ BarWidget {
     scanResults = []
     scanDone = false
     scanProc.running = true
+  }
+
+  function enterNewProfile() {
+    // 드래프트 초기값: 연결돼 있으면 기기의 현재 설정, 아니면 활성/마지막 프로필
+    var base = connected ? {volt: setV, curr: setC, vlim: vlim, clim: clim}
+             : profiles[lastProfile] || {volt: 0, curr: 0, vlim: 0, clim: 0}
+    dV = base.volt
+    dC = base.curr
+    dVL = base.vlim
+    dCL = base.clim
+    confirmOverwrite = false
+    view = "newProfile"
   }
 
   function profileSummary(p) {
@@ -331,6 +351,7 @@ BarWidget {
             anchors.left: parent.left
             text: root.view === "profiles" ? "프로필 관리"
                 : root.view === "devices" ? "기기 변경"
+                : root.view === "newProfile" ? "새 프로필"
                 : root.deviceAlias !== "" ? root.deviceAlias
                 : root.model !== "" ? root.model : "PSU"
             color: Color.foreground
@@ -458,7 +479,8 @@ BarWidget {
 
             NavRow {
               caption: "프로필"
-              value: root.lastProfile !== "" ? root.lastProfile : "없음"
+              value: root.activeProfile !== "" ? root.activeProfile
+                   : root.profileNames.length > 0 ? "자유 모드" : "없음"
               chipLabel: "관리 »"
               onActivated: root.view = "profiles"
             }
@@ -492,7 +514,8 @@ BarWidget {
               required property string modelData
 
               readonly property var p: root.profiles[modelData] || {}
-              readonly property bool isLast: modelData === root.lastProfile
+              // 강조는 '지금 기기 값과 일치하는' 프로필만 — 튜닝하면 강조가 꺼진다
+              readonly property bool isLast: modelData === root.activeProfile
               readonly property bool confirming: root.confirmDelete === modelData
 
               width: col.width
@@ -578,52 +601,111 @@ BarWidget {
 
           PanelSeparator { width: parent.width }
 
-          PanelSectionHeader { text: "새 프로필" }
+          ActionChip {
+            label: "＋ 새 프로필 만들기"
+            onActivated: root.enterNewProfile()
+          }
+        }
+
+        // ═══════════════ newProfile 뷰 ═══════════════
+        // 드래프트 편집 — 저장 버튼을 누르기 전까지 기기와 config 어디에도
+        // 아무 영향이 없다. 기존 이름 저장은 2단계 확인(덮어쓰기).
+        Column {
+          visible: root.view === "newProfile"
+          width: parent.width
+          spacing: Style.space(8)
+
+          BackRow { onBack: root.view = "profiles" }
 
           Text {
-            visible: root.connected
-            text: "현재 설정: " + root.setV.toFixed(2) + "V / " + root.setC.toFixed(2)
-                + "A · 리밋 " + root.vlim.toFixed(1) + "/" + root.clim.toFixed(1)
+            width: parent.width
+            text: root.connected
+                ? "기기의 현재 설정에서 시작 — 저장 전까지 기기에는 영향 없음"
+                : "기기 미연결 — 값을 직접 입력해 저장할 수 있음"
             color: Qt.darker(Color.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          ValueRow {
+            caption: "전압"
+            value: root.dV.toFixed(2) + " V"
+            step: 0.1
+            onAdjust: function(delta) { root.dV = Math.max(0, root.dV + delta) }
+          }
+
+          ValueRow {
+            caption: "전류 제한"
+            value: root.dC.toFixed(2) + " A"
+            step: 0.1
+            onAdjust: function(delta) { root.dC = Math.max(0, root.dC + delta) }
+          }
+
+          ValueRow {
+            caption: "전압 리밋"
+            value: root.dVL.toFixed(1) + " V"
+            step: 0.1
+            dimmed: true
+            onAdjust: function(delta) { root.dVL = Math.max(0, root.dVL + delta) }
+          }
+
+          ValueRow {
+            caption: "전류 리밋"
+            value: root.dCL.toFixed(1) + " A"
+            step: 0.1
+            dimmed: true
+            onAdjust: function(delta) { root.dCL = Math.max(0, root.dCL + delta) }
+          }
+
+          Text {
+            visible: root.dV > root.dVL + 0.001 || root.dC > root.dCL + 0.001
+            width: parent.width
+            text: "리밋이 설정값보다 낮아요 — 저장 불가"
+            color: Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
 
           Item {
-            visible: root.connected
             width: parent.width
             height: Style.space(30)
 
             TextField {
-              id: nameField
+              id: newNameField
               anchors.left: parent.left
-              anchors.right: saveChip.left
+              anchors.right: newSaveChip.left
               anchors.rightMargin: Style.space(8)
               anchors.verticalCenter: parent.verticalCenter
-              placeholderText: "프로필 이름 (예: ROVER)"
-              onAccepted: saveChip.activated()
+              placeholderText: "프로필 이름 (예: BENCH-5V)"
+              onTextChanged: root.confirmOverwrite = false
+              onAccepted: newSaveChip.activated()
             }
 
             ActionChip {
-              id: saveChip
+              id: newSaveChip
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              label: "저장"
+              label: root.confirmOverwrite ? "덮어쓰기?" : "저장"
+              urgentStyle: root.confirmOverwrite
               onActivated: {
-                var n = nameField.text.trim()
+                var n = newNameField.text.trim()
                 if (n === "") return
-                root.runAction(["profile", "save", n])
-                nameField.text = ""
+                if (root.dV > root.dVL + 0.001 || root.dC > root.dCL + 0.001) return
+                if (root.profiles[n] !== undefined && !root.confirmOverwrite) {
+                  root.confirmOverwrite = true
+                  return
+                }
+                root.confirmOverwrite = false
+                root.runAction(["profile", "save", n,
+                                "--volt", root.dV.toFixed(2),
+                                "--curr", root.dC.toFixed(2),
+                                "--vlim", root.dVL.toFixed(2),
+                                "--clim", root.dCL.toFixed(2)])
+                newNameField.text = ""
+                root.view = "profiles"
               }
             }
-          }
-
-          Text {
-            visible: !root.connected
-            text: "기기가 연결돼야 현재 설정을 저장할 수 있어요"
-            color: Qt.darker(Color.foreground, 1.5)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
           }
         }
 
