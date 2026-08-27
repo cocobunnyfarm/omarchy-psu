@@ -207,3 +207,43 @@ class OwonSPE:
                 "pow": self._qf("MEAS:POW?"),
             },
         }
+
+
+def probe(port, baud=DEFAULT_BAUD, wait=0.6):
+    """포트에 *IDN? 프로브를 보내 PSU인지 판별. 응답 문자열 또는 None.
+
+    포트 이름이 아니라 '식별 명령에 응답하는가'로 기기를 찾는다.
+    (다른 시리얼 기기에는 무해한 텍스트 한 줄일 뿐이다.)
+    """
+    try:
+        psu = OwonSPE(port, baud)
+    except PsuError:
+        return None
+    try:
+        return psu.query("*IDN?", wait=wait, retries=1)
+    finally:
+        psu.close()
+
+
+def apply_profile(psu, p, force=False):
+    """프로필(volt/curr/vlim/clim)을 안전한 순서로 적용.
+
+    - 기본적으로 출력이 ON이면 거부 (부하에 실시간 전압 변화가 가해짐)
+    - 리밋/설정값 상호 제약 회피 순서:
+      1) 현재 리밋 안에 드는 설정값 먼저 (리밋을 낮추기 전에 설정값부터)
+      2) 리밋을 목표값으로
+      3) 설정값 최종 확정 (리밋을 올린 뒤에야 가능한 값 포함)
+    - 출력은 절대 자동으로 켜지 않는다.
+    """
+    if not force and psu.output():
+        raise PsuError("출력이 ON 상태 — 끄고 적용하거나 force를 사용하세요")
+    cur_vlim = psu._qf("VOLT:LIM?") or float("inf")
+    cur_clim = psu._qf("CURR:LIM?") or float("inf")
+    if p["volt"] <= cur_vlim:
+        psu.set_voltage(p["volt"])
+    if p["curr"] <= cur_clim:
+        psu.set_current(p["curr"])
+    psu.set_voltage_limit(p["vlim"])
+    psu.set_current_limit(p["clim"])
+    psu.set_voltage(p["volt"])
+    psu.set_current(p["curr"])
