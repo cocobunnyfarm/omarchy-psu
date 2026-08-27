@@ -14,13 +14,6 @@
       "vlim": 14.2,
       "clim": 9.2,
       "note": "로버 13.8V 계통"
-    },
-    "BENCH-5V": {
-      "volt": 5.0,
-      "curr": 1.0,
-      "vlim": 5.5,
-      "clim": 1.5,
-      "note": "벤치 5V 샘플"
     }
   },
   "last_profile": "ROVER"

@@ -8,7 +8,7 @@ import qs.Ui
 //
 // 바 표시: 플러그(출력 OFF) / 번개+실측 전압(ON) / 꺼진 플러그(연결 안 됨)
 // 좌클릭 = 제어 팝업, 우클릭 = 즉시 새로고침
-// 팝업은 두 뷰: main(상태/제어 + 기기 변경) / profiles(프로필 관리)
+// 팝업 뷰 3개: main(상태/제어) / profiles(프로필 관리) / devices(기기 변경)
 BarWidget {
   id: root
   moduleName: "io.github.cocobunnyfarm.psu"
@@ -28,12 +28,14 @@ BarWidget {
   property real clim: 0
   property string model: ""
   property string deviceAlias: ""
+  property string deviceId: ""
   property var profiles: ({})
   property string lastProfile: ""
   property string lastError: ""
   property var scanResults: []
   property bool scanDone: false
-  property string view: "main"        // "main" | "profiles"
+  property string view: "main"        // "main" | "profiles" | "devices"
+  property string confirmDelete: ""   // 삭제 2단계 확인 중인 프로필 이름
   readonly property bool busy: actionProc.running
   readonly property var profileNames: Object.keys(profiles)
 
@@ -43,6 +45,7 @@ BarWidget {
       profiles = s.profiles || {}
       lastProfile = s.last_profile || ""
       deviceAlias = (s.device && s.device.alias) ? s.device.alias : ""
+      deviceId = (s.device && s.device.id) ? s.device.id : ""
       if (!s.connected) {
         // 포트 잠금 경합(다른 프로세스가 잠깐 점유)은 일시적 — 상태 유지
         if (String(s.error).indexOf("사용 중") === -1) connected = false
@@ -79,6 +82,14 @@ BarWidget {
     scanResults = []
     scanDone = false
     scanProc.running = true
+  }
+
+  function profileSummary(p) {
+    if (!p || p.volt === undefined) return ""
+    var s = p.volt.toFixed(1) + "V / " + p.curr.toFixed(1) + "A · 리밋 "
+          + p.vlim.toFixed(1) + "/" + p.clim.toFixed(1)
+    if (p.note) s += " · " + p.note
+    return s
   }
 
   Process {
@@ -126,6 +137,12 @@ BarWidget {
     onTriggered: root.refreshNow()
   }
 
+  Timer {
+    id: confirmTimer
+    interval: 3000
+    onTriggered: root.confirmDelete = ""
+  }
+
   // ── 팝업 라우팅 계약: 호스트는 위젯 루트의 opened/open/close 를 본다 ──
   property bool panelOpen: false
   readonly property bool opened: panelOpen
@@ -135,6 +152,7 @@ BarWidget {
     scanResults = []
     scanDone = false
     lastError = ""
+    confirmDelete = ""
     refreshNow()
   }
   function close() { panelOpen = false }
@@ -167,29 +185,32 @@ BarWidget {
     }
   }
 
-  // ── 제어 팝업 ──────────────────────────────────────────────────────
+  // ── 재사용 컴포넌트 ────────────────────────────────────────────────
   readonly property real pad: Style.space(14)
 
   component ActionChip: Rectangle {
     id: chip
 
     property string label: ""
+    property bool urgentStyle: false
     signal activated()
+
+    readonly property color tone: urgentStyle ? Color.urgent : Color.foreground
 
     width: Math.max(Style.space(24), chipLabel.implicitWidth + Style.space(14))
     height: Style.space(24)
     radius: Style.space(5)
-    color: chipMouse.pressed ? Qt.alpha(Color.foreground, 0.25)
-         : chipMouse.containsMouse ? Qt.alpha(Color.foreground, 0.12)
+    color: chipMouse.pressed ? Qt.alpha(tone, 0.25)
+         : chipMouse.containsMouse ? Qt.alpha(tone, 0.12)
          : "transparent"
     border.width: 1
-    border.color: Qt.alpha(Color.foreground, 0.35)
+    border.color: Qt.alpha(tone, urgentStyle ? 0.7 : 0.35)
 
     Text {
       id: chipLabel
       anchors.centerIn: parent
       text: chip.label
-      color: Color.foreground
+      color: chip.tone
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
     }
@@ -206,6 +227,7 @@ BarWidget {
     property string caption: ""
     property string value: ""
     property real step: 0
+    property bool dimmed: false
     signal adjust(real delta)
 
     width: parent.width
@@ -215,7 +237,7 @@ BarWidget {
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
       text: caption
-      color: Qt.darker(Color.foreground, 1.3)
+      color: Qt.darker(Color.foreground, dimmed ? 1.5 : 1.3)
       font.family: Style.font.family
       font.pixelSize: Style.font.body
     }
@@ -228,14 +250,55 @@ BarWidget {
       Text {
         anchors.verticalCenter: parent.verticalCenter
         text: parent.parent.value
-        color: Color.foreground
+        color: parent.parent.dimmed ? Qt.darker(Color.foreground, 1.3)
+                                    : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
-        font.bold: true
+        font.bold: !parent.parent.dimmed
       }
 
       ActionChip { label: "−"; onActivated: parent.parent.adjust(-parent.parent.step) }
       ActionChip { label: "+"; onActivated: parent.parent.adjust(parent.parent.step) }
+    }
+  }
+
+  component NavRow: Item {
+    property string caption: ""
+    property string value: ""
+    property string chipLabel: ""
+    signal activated()
+
+    width: parent.width
+    height: Style.space(26)
+
+    Text {
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      text: caption + (value !== "" ? ": " + value : "")
+      color: Qt.darker(Color.foreground, 1.3)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+    }
+
+    ActionChip {
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      label: parent.chipLabel
+      onActivated: parent.activated()
+    }
+  }
+
+  component BackRow: Item {
+    signal back()
+
+    width: parent.width
+    height: Style.space(24)
+
+    ActionChip {
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      label: "‹ 돌아가기"
+      onActivated: parent.back()
     }
   }
 
@@ -245,7 +308,7 @@ BarWidget {
     owner: root
     bar: root.bar
     open: root.panelOpen
-    contentWidth: panel.fittedContentWidth(Style.space(320))
+    contentWidth: panel.fittedContentWidth(Style.space(330))
     contentHeight: panel.fittedContentHeight(col.implicitHeight + root.pad * 2)
 
     PanelKeyCatcher {
@@ -259,7 +322,7 @@ BarWidget {
         width: parent.width - root.pad * 2
         spacing: Style.space(10)
 
-        // ═══ 헤더 (항상 표시): 기기 이름 + 연결 상태 ═══
+        // ═══ 헤더 (항상): 뷰 제목 + 연결 상태 ═══
         Item {
           width: parent.width
           height: Style.space(20)
@@ -267,6 +330,7 @@ BarWidget {
           Text {
             anchors.left: parent.left
             text: root.view === "profiles" ? "프로필 관리"
+                : root.view === "devices" ? "기기 변경"
                 : root.deviceAlias !== "" ? root.deviceAlias
                 : root.model !== "" ? root.model : "PSU"
             color: Color.foreground
@@ -285,122 +349,141 @@ BarWidget {
           }
         }
 
-        // ═══ 연결 안 됨: 컨트롤 대신 안내만 ═══
-        Text {
-          visible: !root.connected && root.view === "main"
-          width: parent.width
-          text: "PSU 응답 없음 — 전원·케이블 확인 후 아래에서 다시 검색"
-          color: Qt.darker(Color.foreground, 1.3)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        // ═══ main 뷰 (연결됨): 상태 + 제어 ═══
+        // ═══════════════ main 뷰 ═══════════════
         Column {
-          visible: root.connected && root.view === "main"
+          visible: root.view === "main"
           width: parent.width
           spacing: Style.space(10)
 
-          Column {
-            width: parent.width
-            spacing: Style.space(2)
-
-            Text {
-              text: root.measV.toFixed(2) + " V   " + root.measC.toFixed(3) + " A"
-              color: Color.foreground
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body * 1.5
-              font.bold: true
-            }
-
-            Text {
-              text: root.measP.toFixed(1) + " W"
-              color: Qt.darker(Color.foreground, 1.4)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-            }
-          }
-
-          PanelSeparator { width: parent.width }
-
-          Item {
-            width: parent.width
-            height: Style.space(26)
-
-            Text {
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              text: "출력"
-              color: Color.foreground
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-            }
-
-            ToggleSwitch {
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              checked: root.outputOn
-              busy: root.busy
-              onToggled: root.runAction([root.outputOn ? "off" : "on"])
-            }
-          }
-
-          ValueRow {
-            caption: "전압"
-            value: root.setV.toFixed(2) + " V"
-            step: 0.1
-            onAdjust: function(delta) {
-              root.runAction(["volt", (root.setV + delta).toFixed(2)])
-            }
-          }
-
-          ValueRow {
-            caption: "전류 제한"
-            value: root.setC.toFixed(2) + " A"
-            step: 0.1
-            onAdjust: function(delta) {
-              root.runAction(["curr", (root.setC + delta).toFixed(2)])
-            }
-          }
-
+          // 연결 안 됨: 안내 + 기기 변경 진입만
           Text {
-            text: "리밋 " + root.vlim.toFixed(1) + " V / " + root.clim.toFixed(1) + " A"
-            color: Qt.darker(Color.foreground, 1.5)
+            visible: !root.connected
+            width: parent.width
+            text: "PSU 응답 없음 — 전원·케이블 확인 후 기기 변경에서 다시 검색"
+            color: Qt.darker(Color.foreground, 1.3)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
-          // 프로필 요약 한 줄 + 관리 진입
-          Item {
+          // 연결됨: 상태 + 제어
+          Column {
+            visible: root.connected
             width: parent.width
-            height: Style.space(26)
+            spacing: Style.space(10)
 
-            Text {
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.lastProfile !== ""
-                  ? "프로필: " + root.lastProfile
-                  : "프로필 없음"
-              color: Qt.darker(Color.foreground, 1.3)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
+            Column {
+              width: parent.width
+              spacing: Style.space(2)
+
+              Text {
+                text: root.measV.toFixed(2) + " V   " + root.measC.toFixed(3) + " A"
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body * 1.5
+                font.bold: true
+              }
+
+              Text {
+                text: root.measP.toFixed(1) + " W"
+                color: Qt.darker(Color.foreground, 1.4)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
             }
 
-            ActionChip {
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              label: "관리 »"
+            PanelSeparator { width: parent.width }
+
+            Item {
+              width: parent.width
+              height: Style.space(26)
+
+              Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "출력"
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.outputOn
+                busy: root.busy
+                onToggled: root.runAction([root.outputOn ? "off" : "on"])
+              }
+            }
+
+            ValueRow {
+              caption: "전압"
+              value: root.setV.toFixed(2) + " V"
+              step: 0.1
+              onAdjust: function(delta) {
+                root.runAction(["volt", (root.setV + delta).toFixed(2)])
+              }
+            }
+
+            ValueRow {
+              caption: "전류 제한"
+              value: root.setC.toFixed(2) + " A"
+              step: 0.1
+              onAdjust: function(delta) {
+                root.runAction(["curr", (root.setC + delta).toFixed(2)])
+              }
+            }
+
+            ValueRow {
+              caption: "전압 리밋"
+              value: root.vlim.toFixed(1) + " V"
+              step: 0.1
+              dimmed: true
+              onAdjust: function(delta) {
+                root.runAction(["vlim", (root.vlim + delta).toFixed(2)])
+              }
+            }
+
+            ValueRow {
+              caption: "전류 리밋"
+              value: root.clim.toFixed(1) + " A"
+              step: 0.1
+              dimmed: true
+              onAdjust: function(delta) {
+                root.runAction(["clim", (root.clim + delta).toFixed(2)])
+              }
+            }
+
+            PanelSeparator { width: parent.width }
+
+            NavRow {
+              caption: "프로필"
+              value: root.lastProfile !== "" ? root.lastProfile : "없음"
+              chipLabel: "관리 »"
               onActivated: root.view = "profiles"
+            }
+          }
+
+          NavRow {
+            caption: "기기"
+            value: root.deviceAlias !== ""
+                 ? root.deviceAlias + (root.connected ? "" : " (응답 없음)")
+                 : "선택 안 됨"
+            chipLabel: "변경 »"
+            onActivated: {
+              root.view = "devices"
+              root.startScan()
             }
           }
         }
 
-        // ═══ profiles 뷰: 프로필 관리 전용 ═══
+        // ═══════════════ profiles 뷰 ═══════════════
         Column {
           visible: root.view === "profiles"
           width: parent.width
-          spacing: Style.space(6)
+          spacing: Style.space(8)
+
+          BackRow { onBack: root.view = "main" }
 
           Repeater {
             model: root.profileNames
@@ -409,50 +492,77 @@ BarWidget {
               required property string modelData
 
               readonly property var p: root.profiles[modelData] || {}
+              readonly property bool isLast: modelData === root.lastProfile
+              readonly property bool confirming: root.confirmDelete === modelData
 
               width: col.width
-              height: Style.space(30)
-              radius: Style.space(5)
-              color: rowMouse.containsMouse ? Qt.alpha(Color.foreground, 0.08)
-                                            : "transparent"
+              height: Style.space(44)
+              radius: Style.space(6)
+              color: isLast ? Qt.alpha(Color.accent, 0.08) : Qt.alpha(Color.foreground, 0.04)
+              border.width: 1
+              border.color: isLast ? Qt.alpha(Color.accent, 0.35)
+                                   : Qt.alpha(Color.foreground, 0.12)
 
-              MouseArea {
-                id: rowMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                // 프로필 클릭 = 적용 (출력 ON이면 코어가 거부하고 에러 표시)
-                onClicked: root.runAction(["profile", "apply", modelData])
-              }
-
-              Text {
+              Column {
                 anchors.left: parent.left
-                anchors.leftMargin: Style.space(6)
+                anchors.leftMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
-                text: modelData
-                color: Color.foreground
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                font.bold: modelData === root.lastProfile
-              }
+                spacing: Style.space(2)
 
-              Row {
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(2)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(8)
+                Row {
+                  spacing: Style.space(6)
+
+                  Rectangle {
+                    visible: parent.parent.parent.isLast
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: Style.space(6)
+                    radius: width / 2
+                    color: Color.accent
+                  }
+
+                  Text {
+                    text: parent.parent.parent.modelData
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: parent.parent.parent.isLast
+                  }
+                }
 
                 Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: (p.volt !== undefined ? p.volt.toFixed(1) : "?") + "V / "
-                      + (p.curr !== undefined ? p.curr.toFixed(1) : "?") + "A"
+                  text: root.profileSummary(parent.parent.p)
                   color: Qt.darker(Color.foreground, 1.4)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                 }
+              }
+
+              Row {
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(6)
 
                 ActionChip {
-                  label: "×"
-                  onActivated: root.runAction(["profile", "delete", modelData])
+                  label: "적용"
+                  onActivated: root.runAction(["profile", "apply", parent.parent.modelData])
+                }
+
+                ActionChip {
+                  label: parent.parent.confirming ? "삭제?" : "×"
+                  urgentStyle: parent.parent.confirming
+                  onActivated: {
+                    var name = parent.parent.modelData
+                    if (root.confirmDelete === name) {
+                      root.confirmDelete = ""
+                      confirmTimer.stop()
+                      root.runAction(["profile", "delete", name])
+                    } else {
+                      root.confirmDelete = name
+                      confirmTimer.restart()
+                    }
+                  }
                 }
               }
             }
@@ -460,13 +570,25 @@ BarWidget {
 
           Text {
             visible: root.profileNames.length === 0
-            text: "저장된 프로필 없음"
+            text: "저장된 프로필 없음 — 아래에서 현재 설정을 저장하세요"
             color: Qt.darker(Color.foreground, 1.4)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
           }
 
-          // 현재 기기 설정을 새 프로필로 저장 (기기 연결 시에만)
+          PanelSeparator { width: parent.width }
+
+          PanelSectionHeader { text: "새 프로필" }
+
+          Text {
+            visible: root.connected
+            text: "현재 설정: " + root.setV.toFixed(2) + "V / " + root.setC.toFixed(2)
+                + "A · 리밋 " + root.vlim.toFixed(1) + "/" + root.clim.toFixed(1)
+            color: Qt.darker(Color.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
           Item {
             visible: root.connected
             width: parent.width
@@ -478,7 +600,7 @@ BarWidget {
               anchors.right: saveChip.left
               anchors.rightMargin: Style.space(8)
               anchors.verticalCenter: parent.verticalCenter
-              placeholderText: "현재 설정을 프로필로 저장"
+              placeholderText: "프로필 이름 (예: ROVER)"
               onAccepted: saveChip.activated()
             }
 
@@ -496,36 +618,59 @@ BarWidget {
             }
           }
 
-          Item { width: 1; height: Style.space(2) }
-
-          ActionChip {
-            label: "‹ 돌아가기"
-            onActivated: root.view = "main"
+          Text {
+            visible: !root.connected
+            text: "기기가 연결돼야 현재 설정을 저장할 수 있어요"
+            color: Qt.darker(Color.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
         }
 
-        // ═══ 기기 변경 (main 뷰에서 항상 — 연결 안 됐을 때의 복구 수단) ═══
+        // ═══════════════ devices 뷰 ═══════════════
         Column {
-          visible: root.view === "main"
+          visible: root.view === "devices"
           width: parent.width
-          spacing: Style.space(6)
+          spacing: Style.space(8)
 
-          PanelSectionHeader { text: "기기 변경" }
+          BackRow { onBack: root.view = "main" }
 
-          Item {
+          PanelSectionHeader { text: "현재 기기" }
+
+          Column {
             width: parent.width
-            height: Style.space(26)
+            spacing: Style.space(2)
 
             Text {
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
               text: root.deviceAlias !== ""
                   ? root.deviceAlias + (root.connected ? "" : " — 응답 없음")
                   : "(선택된 기기 없음)"
-              color: root.connected ? Qt.darker(Color.foreground, 1.2)
-                                    : Qt.darker(Color.foreground, 1.5)
+              color: root.connected ? Color.foreground : Qt.darker(Color.foreground, 1.4)
               font.family: Style.font.family
               font.pixelSize: Style.font.body
+            }
+
+            Text {
+              visible: root.deviceId !== ""
+              width: parent.width
+              text: root.deviceId
+              color: Qt.darker(Color.foreground, 1.6)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideMiddle
+            }
+          }
+
+          PanelSeparator { width: parent.width }
+
+          Item {
+            width: parent.width
+            height: Style.space(24)
+
+            PanelSectionHeader {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "발견된 기기"
             }
 
             ActionChip {
@@ -543,31 +688,38 @@ BarWidget {
               required property var modelData
 
               width: col.width
-              height: Style.space(30)
-              radius: Style.space(5)
-              color: devMouse.containsMouse ? Qt.alpha(Color.foreground, 0.08)
-                                            : "transparent"
-
-              MouseArea {
-                id: devMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                onClicked: {
-                  if (modelData.id) root.runAction(["use", modelData.id])
-                  root.scanResults = []
-                  root.scanDone = false
-                }
-              }
+              height: Style.space(36)
+              radius: Style.space(6)
+              color: Qt.alpha(Color.foreground, 0.04)
+              border.width: 1
+              border.color: Qt.alpha(Color.foreground, 0.12)
 
               Text {
                 anchors.left: parent.left
-                anchors.leftMargin: Style.space(6)
+                anchors.leftMargin: Style.space(10)
+                anchors.right: selectChip.left
+                anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
-                text: (modelData.selected ? "» " : "") +
-                      String(modelData.idn).split(",").slice(0, 2).join(" ")
+                text: String(modelData.idn).split(",").slice(0, 2).join(" ")
+                    + (modelData.selected ? "  (현재)" : "")
                 color: Color.foreground
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              ActionChip {
+                id: selectChip
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                label: modelData.selected ? "선택됨" : "선택"
+                onActivated: {
+                  if (modelData.id && !modelData.selected) {
+                    root.runAction(["use", modelData.id])
+                    root.view = "main"
+                  }
+                }
               }
             }
           }
