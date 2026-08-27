@@ -38,10 +38,10 @@
 }
 ```
 
-## 구현 순서
+## 구현 순서 (✅ 2026-08-27 전부 완료 — v0.2.0)
 
-- [ ] repo 재편 (manifest 루트로) + ID 개명 — 깃헙 repo `omarchy-psu` 생성 후
-- [ ] 코어: config.json 로드/저장, `psu list`(by-id 스캔+프로브), `psu use`
-- [ ] 코어: `psu profile save/apply/list` (+ status --json에 프로필 정보 포함)
-- [ ] 위젯: 프로필 드롭다운 + 저장, 기기 선택 뷰
+- [x] repo 재편 (manifest 루트로) + ID 개명 — 깃헙 repo `omarchy-psu` 생성 후
+- [x] 코어: config.json 로드/저장, `psu list`(by-id 스캔+프로브), `psu use`
+- [x] 코어: `psu profile save/apply/list` (+ status --json에 프로필 정보 포함)
+- [x] 위젯: 프로필 목록(클릭 적용/× 삭제/저장 입력), 기기 검색/전환 뷰
 - [ ] 수동 GUI 테스트 (로버 분리 상태에서 토글/스테퍼)
