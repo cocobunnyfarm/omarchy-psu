@@ -34,6 +34,9 @@ OWON SPE3102 벤치 전원공급기 원격 제어. 로버 개발 환경 원격 �
 - **프로필은 부하(로버 등) 연동 개념** — 기기 내부 슬롯(*SAV/*RCL) 무시,
   `config/config.json`이 정본. `~/.config/psu` → repo `config/` 심볼릭 링크
   (프로필 수정 = repo working tree 반영 → 커밋이 곧 백업. public 유지 결정).
+  ⚠️ 링크는 절대경로 대상이라 **repo 폴더를 옮기면 반드시 재연결**:
+  `ln -sfn <새경로>/config ~/.config/psu`. 소비자들(CLI/위젯)은
+  ~/.config/psu 만 보므로 링크만 고치면 끝. 현 위치: `~/Projects/omarchy/omarchy-psu`
 - 기기 저장은 by-id 안정 경로 (ttyUSB 번호는 연결 순서 따라 바뀜).
 - 기기 범위는 불변이라 config에 1회 캐시 (`psu use` 시 + status 자동 백필).
 - **출력 ON은 항상 명시적 행동**: profile apply는 출력 안 건드림 + 출력 ON
