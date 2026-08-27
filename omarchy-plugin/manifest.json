@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "ted.psu",
+  "name": "PSU Control",
+  "version": "0.1.0",
+  "author": "Ted Lee",
+  "license": "MIT",
+  "description": "OWON SPE 벤치 전원공급기 제어 — 출력 토글, 전압/전류 조정, 실측 모니터링. 기기 통신은 번들된 psu CLI(이식 가능한 코어)에 위임.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "PSU Control",
+    "description": "전원공급기 출력 상태를 바에 표시하고, 클릭하면 제어 팝업을 연다.",
+    "category": "Hardware",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5,
+      "port": "/dev/ttyUSB0"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 300,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}

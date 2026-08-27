@@ -1,0 +1,209 @@
+"""OWON SPE 시리즈 전원공급기 제어 코어 라이브러리.
+
+UI(오마치 플러그인, 원격 스크립트 등)와 분리된 순수 프로토콜 계층.
+
+이식성:
+- pyserial이 설치되어 있으면 사용 → Windows/macOS/Linux 전부 커버
+- 없으면 POSIX termios 폴백 → 리눅스/맥에서 의존성 제로로 동작
+
+동시 접근:
+- 시리얼 포트는 한 번에 한 프로세스만 열도록 잠금 (termios: flock,
+  pyserial: exclusive). 바 위젯 폴링과 수동 스크립트가 겹쳐도 안전.
+"""
+import os
+import time
+
+DEFAULT_PORT = os.environ.get("PSU_PORT", "/dev/ttyUSB0")
+DEFAULT_BAUD = 115200
+
+try:
+    import serial as _pyserial
+except ImportError:
+    _pyserial = None
+
+
+class PsuError(Exception):
+    """통신/잠금 실패."""
+
+
+class _PySerialTransport:
+    def __init__(self, port, baud):
+        kwargs = {"timeout": 0}
+        if os.name == "posix":
+            kwargs["exclusive"] = True
+        try:
+            self._s = _pyserial.Serial(port, baud, **kwargs)
+        except Exception as e:
+            raise PsuError(str(e)) from e
+
+    def write(self, data):
+        self._s.write(data)
+
+    def read_available(self):
+        return self._s.read(256)
+
+    def flush_input(self):
+        self._s.reset_input_buffer()
+
+    def close(self):
+        self._s.close()
+
+
+class _TermiosTransport:
+    def __init__(self, port, baud):
+        import fcntl
+        import termios
+        self._termios = termios
+        bauds = {9600: termios.B9600, 19200: termios.B19200,
+                 38400: termios.B38400, 57600: termios.B57600,
+                 115200: termios.B115200}
+        if baud not in bauds:
+            raise PsuError(f"지원하지 않는 보레이트: {baud}")
+        try:
+            self.fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        except OSError as e:
+            raise PsuError(f"{port} 열기 실패: {e}") from e
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(self.fd)
+            raise PsuError(f"{port} 사용 중 (다른 프로세스가 잠금)") from None
+        a = termios.tcgetattr(self.fd)
+        a[0] = 0
+        a[1] = 0
+        a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+        a[3] = 0
+        a[4] = bauds[baud]
+        a[5] = bauds[baud]
+        termios.tcsetattr(self.fd, termios.TCSANOW, a)
+
+    def write(self, data):
+        os.write(self.fd, data)
+
+    def read_available(self):
+        try:
+            return os.read(self.fd, 256)
+        except BlockingIOError:
+            return b""
+
+    def flush_input(self):
+        self._termios.tcflush(self.fd, self._termios.TCIFLUSH)
+
+    def close(self):
+        os.close(self.fd)
+
+
+def open_transport(port, baud):
+    if _pyserial is not None:
+        return _PySerialTransport(port, baud)
+    if os.name != "posix":
+        raise PsuError("pyserial이 필요합니다: pip install pyserial")
+    return _TermiosTransport(port, baud)
+
+
+class OwonSPE:
+    """OWON SPE 시리즈 SCPI 드라이버 (SPE3102에서 전수 검증됨).
+
+    검증된 명령: *IDN?, VOLT(?), CURR(?), VOLT:LIM(?), CURR:LIM(?),
+    OUTP(?), MEAS:VOLT?, MEAS:CURR?, MEAS:POW?, SYST:VERS?, SYST:ERR?
+    """
+
+    def __init__(self, port=DEFAULT_PORT, baud=DEFAULT_BAUD):
+        self.t = open_transport(port, baud)
+
+    def close(self):
+        self.t.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    # ── 저수준 ────────────────────────────────────────────────────────
+    def send(self, cmd):
+        self.t.flush_input()
+        self.t.write(cmd.encode() + b"\n")
+        time.sleep(0.15)  # 기기 처리 시간
+
+    def query(self, cmd, wait=0.8, retries=1):
+        # 포트를 처음 연 직후 첫 명령이 간헐적으로 무응답 → 재시도로 흡수
+        for _ in range(retries + 1):
+            self.t.flush_input()
+            self.t.write(cmd.encode() + b"\n")
+            deadline = time.time() + wait
+            buf = b""
+            while time.time() < deadline:
+                chunk = self.t.read_available()
+                if chunk:
+                    buf += chunk
+                    if buf.endswith(b"\n"):
+                        break
+                    deadline = time.time() + 0.3
+                else:
+                    time.sleep(0.02)
+            if buf:
+                return buf.decode(errors="replace").strip()
+        return None
+
+    def _qf(self, cmd):
+        r = self.query(cmd)
+        try:
+            return float(r)
+        except (TypeError, ValueError):
+            return None
+
+    def _set_verified(self, cmd, value, readback):
+        self.send(f"{cmd} {value:.2f}")
+        rb = self._qf(readback)
+        if rb is None or abs(rb - value) > 0.02:
+            raise PsuError(f"{cmd} {value:.2f} 반영 실패 (readback: {rb})")
+        return rb
+
+    # ── 공개 API ─────────────────────────────────────────────────────
+    def idn(self):
+        r = self.query("*IDN?")
+        if r is None:
+            raise PsuError("기기 무응답 (*IDN?)")
+        return r
+
+    def output(self):
+        return self.query("OUTP?") in ("1", "ON")
+
+    def set_output(self, on):
+        self.send("OUTP ON" if on else "OUTP OFF")
+        actual = self.output()
+        if actual != bool(on):
+            raise PsuError(f"출력 {'ON' if on else 'OFF'} 반영 실패")
+        return actual
+
+    def set_voltage(self, v):
+        return self._set_verified("VOLT", v, "VOLT?")
+
+    def set_current(self, a):
+        return self._set_verified("CURR", a, "CURR?")
+
+    def set_voltage_limit(self, v):
+        return self._set_verified("VOLT:LIM", v, "VOLT:LIM?")
+
+    def set_current_limit(self, a):
+        return self._set_verified("CURR:LIM", a, "CURR:LIM?")
+
+    def status(self):
+        """전체 스냅샷. 첫 질의(idn)에 재시도가 걸려 있어 연결 검증을 겸함."""
+        return {
+            "connected": True,
+            "idn": self.idn(),
+            "output": self.output(),
+            "set": {
+                "volt": self._qf("VOLT?"),
+                "curr": self._qf("CURR?"),
+                "vlim": self._qf("VOLT:LIM?"),
+                "clim": self._qf("CURR:LIM?"),
+            },
+            "meas": {
+                "volt": self._qf("MEAS:VOLT?"),
+                "curr": self._qf("MEAS:CURR?"),
+                "pow": self._qf("MEAS:POW?"),
+            },
+        }

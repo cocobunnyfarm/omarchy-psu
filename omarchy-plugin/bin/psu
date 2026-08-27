@@ -1,0 +1,12 @@
+#!/bin/bash
+# 오마치 플러그인 → 코어 CLI 위임 래퍼.
+# 설치본에서는 플러그인 안에 번들된 core/ 를, 저장소에서 직접 실행하면
+# 저장소 루트의 core/ 를 찾는다.
+here="$(dirname "$(readlink -f "$0")")"
+for cand in "$here/../core/psu_cli.py" "$here/../../core/psu_cli.py"; do
+  if [[ -f "$cand" ]]; then
+    exec python3 "$cand" "$@"
+  fi
+done
+echo "psu: core/psu_cli.py 를 찾을 수 없음" >&2
+exit 1
