@@ -242,14 +242,24 @@ def probe(port, baud=DEFAULT_BAUD, wait=0.6):
         psu.close()
 
 
-def apply_values(psu, p):
-    """volt/curr/vlim/clim 네 값을 리밋·설정값 상호 제약을 피하는 순서로 적용.
+def validate_profile(p):
+    """상식 검증 (기기 접속 불필요): 숫자·음수·리밋 관계.
 
-    1) 현재 리밋 안에 드는 설정값 먼저 (리밋을 낮추기 전에 설정값부터)
-    2) 리밋을 목표값으로
-    3) 설정값 최종 확정 (리밋을 올린 뒤에야 가능한 값 포함)
-    출력은 절대 건드리지 않는다.
+    UI가 막더라도 코어가 최종 방어선 — CLI 직접 사용/외부 호출 모두 커버.
     """
+    for k in ("volt", "curr", "vlim", "clim"):
+        v = p.get(k)
+        if not isinstance(v, (int, float)) or v != v or v < 0:
+            raise PsuError(f"프로필 값 오류: {k}={v!r}")
+    if p["volt"] > p["vlim"] + 0.001:
+        raise PsuError(f"전압({p['volt']}V)이 전압 리밋({p['vlim']}V)보다 큼")
+    if p["curr"] > p["clim"] + 0.001:
+        raise PsuError(f"전류({p['curr']}A)가 전류 리밋({p['clim']}A)보다 큼")
+
+
+def _apply_sequence(psu, p):
+    """리밋·설정값 상호 제약을 피하는 순서로 적용. 각 단계는 readback
+    검증(_set_verified)이라 기기가 거부/클램프하면 즉시 PsuError."""
     cur_vlim = psu._qf("VOLT:LIM?") or float("inf")
     cur_clim = psu._qf("CURR:LIM?") or float("inf")
     if p["volt"] <= cur_vlim:
@@ -260,6 +270,34 @@ def apply_values(psu, p):
     psu.set_current_limit(p["clim"])
     psu.set_voltage(p["volt"])
     psu.set_current(p["curr"])
+
+
+def apply_values(psu, p):
+    """volt/curr/vlim/clim 적용 — 3단 방어:
+
+    1) 사전 상식 검증 (validate_profile)
+    2) 단계별 readback 검증 — 기기 지원 범위 밖 값은 기기가 거부/클램프
+       하므로 readback 불일치로 잡힌다 (이게 '반드시 되는지 테스트')
+    3) 중간 실패 시 이전 설정으로 롤백 시도 — 반쯤 적용된 상태로
+       남겨두지 않는다
+    출력은 절대 건드리지 않는다.
+    """
+    validate_profile(p)
+    psu.idn()  # 연결 게이트 — 기기 무응답이면 여기서 명확한 에러로 종료
+    backup = {"volt": psu._qf("VOLT?"), "curr": psu._qf("CURR?"),
+              "vlim": psu._qf("VOLT:LIM?"), "clim": psu._qf("CURR:LIM?")}
+    try:
+        _apply_sequence(psu, p)
+    except PsuError as e:
+        if any(v is None for v in backup.values()):
+            raise PsuError(f"{e} — 적용 실패 (이전 설정을 읽지 못해 복구 불가, "
+                           f"기기 확인 필요)") from e
+        try:
+            _apply_sequence(psu, backup)
+        except PsuError:
+            raise PsuError(f"{e} — 적용 실패, 복구도 실패. 기기 전면 패널로 "
+                           f"설정을 확인하세요") from e
+        raise PsuError(f"{e} — 기기가 거부하여 이전 설정으로 복구했습니다") from e
 
 
 def apply_profile(psu, p, force=False):

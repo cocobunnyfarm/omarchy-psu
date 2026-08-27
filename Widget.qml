@@ -543,14 +543,18 @@ BarWidget {
             }
 
             PanelSeparator { width: parent.width }
+          }
 
-            NavRow {
-              caption: "프로필"
-              value: root.activeProfile !== "" ? root.activeProfile
-                   : root.profileNames.length > 0 ? "자유 모드" : "없음"
-              chipLabel: "관리 »"
-              onActivated: root.view = "profiles"
-            }
+          // 프로필/기기 진입은 연결 여부와 무관하게 항상 가능
+          NavRow {
+            caption: "프로필"
+            value: !root.connected
+                 ? (root.profileNames.length > 0
+                    ? root.profileNames.length + "개 저장됨" : "없음")
+                 : root.activeProfile !== "" ? root.activeProfile
+                 : root.profileNames.length > 0 ? "자유 모드" : "없음"
+            chipLabel: "관리 »"
+            onActivated: root.view = "profiles"
           }
 
           NavRow {

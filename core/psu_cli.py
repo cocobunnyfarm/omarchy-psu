@@ -27,7 +27,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psu_config  # noqa: E402
 from psu_core import (OwonSPE, PsuError, apply_profile, apply_values,  # noqa: E402
-                      probe)
+                      probe, validate_profile)
 
 
 def open_psu(cfg, args):
@@ -171,6 +171,7 @@ def cmd_profile(cfg, args):
                 if vals[k] is None:
                     vals[k] = s[k]
         p = {k: round(float(v), 2) for k, v in vals.items()}
+        validate_profile(p)  # 리밋 < 설정값 등 말이 안 되는 프로필은 저장 거부
         if args.note:
             p["note"] = args.note
         cfg["profiles"][args.name] = p
