@@ -206,6 +206,18 @@ class OwonSPE:
     def set_current_limit(self, a):
         return self._set_verified("CURR:LIM", a, "CURR:LIM?")
 
+    def ranges(self):
+        """기기 지원 범위 질의 (SPE3102에서 검증: VOLT? MAX 등 단축형만 동작).
+
+        미지원 기기에서는 값이 None — 호출부는 None을 '모름'으로 다룰 것.
+        """
+        return {"volt_min": self._qf("VOLT? MIN"),
+                "volt_max": self._qf("VOLT? MAX"),
+                "curr_min": self._qf("CURR? MIN"),
+                "curr_max": self._qf("CURR? MAX"),
+                "vlim_max": self._qf("VOLT:LIM? MAX"),
+                "clim_max": self._qf("CURR:LIM? MAX")}
+
     def status(self):
         """전체 스냅샷. 첫 질의(idn)에 재시도가 걸려 있어 연결 검증을 겸함."""
         return {
@@ -284,6 +296,18 @@ def apply_values(psu, p):
     """
     validate_profile(p)
     psu.idn()  # 연결 게이트 — 기기 무응답이면 여기서 명확한 에러로 종료
+    # 기기 범위 사전 검증 — 기기를 건드리기 전에 명확한 에러로 거부.
+    # (미지원 기기는 None → 검사 생략, 아래 readback 검증이 백스톱)
+    r = psu.ranges()
+    for key, lo, hi, label, unit in (
+            ("volt", r["volt_min"], r["volt_max"], "전압", "V"),
+            ("curr", r["curr_min"], r["curr_max"], "전류", "A"),
+            ("vlim", None, r["vlim_max"], "전압 리밋", "V"),
+            ("clim", None, r["clim_max"], "전류 리밋", "A")):
+        if hi is not None and p[key] > hi + 0.001:
+            raise PsuError(f"{label} {p[key]}{unit} — 기기 최대 {hi}{unit} 초과")
+        if lo is not None and p[key] < lo - 0.001:
+            raise PsuError(f"{label} {p[key]}{unit} — 기기 최소 {lo}{unit} 미만")
     backup = {"volt": psu._qf("VOLT?"), "curr": psu._qf("CURR?"),
               "vlim": psu._qf("VOLT:LIM?"), "clim": psu._qf("CURR:LIM?")}
     try:

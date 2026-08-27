@@ -50,6 +50,12 @@ BarWidget {
   property real eVL: 0
   property real eCL: 0
   property bool editing: false
+  property var range: ({})   // 기기 지원 범위 (코어가 최초 1회 질의 후 캐시)
+
+  function clamp(x, hi) {
+    var top = (hi !== undefined && hi !== null) ? hi : 999
+    return Math.min(Math.max(0, x), top)
+  }
   readonly property bool busy: actionProc.running
   readonly property var profileNames: Object.keys(profiles)
 
@@ -59,6 +65,7 @@ BarWidget {
       profiles = s.profiles || {}
       lastProfile = s.last_profile || ""
       activeProfile = s.active_profile || ""
+      range = s.range || {}
       deviceAlias = (s.device && s.device.alias) ? s.device.alias : ""
       deviceId = (s.device && s.device.id) ? s.device.id : ""
       if (!s.connected) {
@@ -478,7 +485,7 @@ BarWidget {
               step: 0.1
               highlight: Math.abs(root.eV - root.setV) > 0.001
               onAdjust: function(delta) {
-                root.eV = Math.max(0, root.eV + delta)
+                root.eV = root.clamp(root.eV + delta, root.range.volt_max)
                 root.editing = true
               }
             }
@@ -489,7 +496,7 @@ BarWidget {
               step: 0.1
               highlight: Math.abs(root.eC - root.setC) > 0.001
               onAdjust: function(delta) {
-                root.eC = Math.max(0, root.eC + delta)
+                root.eC = root.clamp(root.eC + delta, root.range.curr_max)
                 root.editing = true
               }
             }
@@ -501,7 +508,7 @@ BarWidget {
               dimmed: true
               highlight: Math.abs(root.eVL - root.vlim) > 0.001
               onAdjust: function(delta) {
-                root.eVL = Math.max(0, root.eVL + delta)
+                root.eVL = root.clamp(root.eVL + delta, root.range.vlim_max)
                 root.editing = true
               }
             }
@@ -513,7 +520,7 @@ BarWidget {
               dimmed: true
               highlight: Math.abs(root.eCL - root.clim) > 0.001
               onAdjust: function(delta) {
-                root.eCL = Math.max(0, root.eCL + delta)
+                root.eCL = root.clamp(root.eCL + delta, root.range.clim_max)
                 root.editing = true
               }
             }
@@ -690,9 +697,13 @@ BarWidget {
 
           Text {
             width: parent.width
-            text: root.connected
+            text: (root.connected
                 ? "기기의 현재 설정에서 시작 — 저장 전까지 기기에는 영향 없음"
-                : "기기 미연결 — 값을 직접 입력해 저장할 수 있음"
+                : "기기 미연결 — 값을 직접 입력해 저장할 수 있음")
+                + (root.range.volt_max
+                   ? "\n기기 범위: ~" + root.range.volt_max + "V / ~"
+                     + root.range.curr_max + "A"
+                   : "")
             color: Qt.darker(Color.foreground, 1.4)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -703,14 +714,14 @@ BarWidget {
             caption: "전압"
             value: root.dV.toFixed(2) + " V"
             step: 0.1
-            onAdjust: function(delta) { root.dV = Math.max(0, root.dV + delta) }
+            onAdjust: function(delta) { root.dV = root.clamp(root.dV + delta, root.range.volt_max) }
           }
 
           ValueRow {
             caption: "전류 제한"
             value: root.dC.toFixed(2) + " A"
             step: 0.1
-            onAdjust: function(delta) { root.dC = Math.max(0, root.dC + delta) }
+            onAdjust: function(delta) { root.dC = root.clamp(root.dC + delta, root.range.curr_max) }
           }
 
           ValueRow {
@@ -718,7 +729,7 @@ BarWidget {
             value: root.dVL.toFixed(1) + " V"
             step: 0.1
             dimmed: true
-            onAdjust: function(delta) { root.dVL = Math.max(0, root.dVL + delta) }
+            onAdjust: function(delta) { root.dVL = root.clamp(root.dVL + delta, root.range.vlim_max) }
           }
 
           ValueRow {
@@ -726,7 +737,7 @@ BarWidget {
             value: root.dCL.toFixed(1) + " A"
             step: 0.1
             dimmed: true
-            onAdjust: function(delta) { root.dCL = Math.max(0, root.dCL + delta) }
+            onAdjust: function(delta) { root.dCL = root.clamp(root.dCL + delta, root.range.clim_max) }
           }
 
           Text {

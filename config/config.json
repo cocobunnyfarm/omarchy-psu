@@ -4,7 +4,15 @@
   "devices": {
     "usb-1a86_USB_Serial-if00-port0": {
       "alias": "SPE3102",
-      "baud": 115200
+      "baud": 115200,
+      "range": {
+        "volt_min": 0.01,
+        "volt_max": 31.0,
+        "curr_min": 0.01,
+        "curr_max": 10.1,
+        "vlim_max": 32.0,
+        "clim_max": 10.2
+      }
     }
   },
   "profiles": {
