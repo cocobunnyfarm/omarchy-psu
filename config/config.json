@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "selected_device": "usb-1a86_USB_Serial-if00-port0",
+  "devices": {
+    "usb-1a86_USB_Serial-if00-port0": {
+      "alias": "SPE3102",
+      "baud": 115200
+    }
+  },
+  "profiles": {
+    "ROVER": {
+      "volt": 13.8,
+      "curr": 9.0,
+      "vlim": 14.2,
+      "clim": 9.2,
+      "note": "로버 13.8V 계통"
+    },
+    "BENCH-5V": {
+      "volt": 5.0,
+      "curr": 1.0,
+      "vlim": 5.5,
+      "clim": 1.5,
+      "note": "벤치 5V 샘플"
+    }
+  },
+  "last_profile": "ROVER"
+}
