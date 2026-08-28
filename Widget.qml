@@ -8,7 +8,8 @@ import qs.Ui
 //
 // 바 표시: 플러그(출력 OFF) / 번개+실측 전압(ON) / 꺼진 플러그(연결 안 됨)
 // 좌클릭 = 제어 팝업, 우클릭 = 즉시 새로고침
-// 팝업 뷰 3개: main(상태/제어) / profiles(프로필 관리) / devices(기기 변경)
+// 팝업 뷰 5개: main(상태/제어) / profiles(프로필 관리) / newProfile /
+//              devices(기기 변경) / timer(출력 자동 차단 설정)
 BarWidget {
   id: root
   moduleName: "io.github.cocobunnyfarm.psu"
@@ -51,6 +52,26 @@ BarWidget {
   property real eCL: 0
   property bool editing: false
   property var range: ({})   // 기기 지원 범위 (코어가 최초 1회 질의 후 캐시)
+  // 타이머(출력 자동 차단) — 설정도 무장 상태도 코어가 정본이다. QML은
+  // deadline(epoch)만 받아 남은 시간을 그리고, 조작은 psu timer 에 위임한다.
+  // 실제 차단은 이 위젯의 주기적 status 폴링 안에서 코어가 수행한다.
+  property bool timerEnabled: false
+  property int timerDefaultSec: 1800
+  property real timerDeadline: 0     // epoch 초, 0 = 무장 안 됨
+  property real timerFiredAt: 0      // 방금 타이머가 껐다는 표식
+  property bool timerSuppressed: false
+  property real nowSec: 0            // 1초 틱 (팝업 열려 있을 때만)
+  property int timerDraftMin: 30     // 기본 시간 스테퍼의 로컬 값
+  readonly property int timerRemaining:
+    timerDeadline > 0 ? Math.max(0, Math.round(timerDeadline - nowSec)) : -1
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n }
+
+  function fmtDuration(sec) {
+    var h = Math.floor(sec / 3600)
+    var m = Math.floor((sec % 3600) / 60)
+    return (h > 0 ? h + ":" + pad2(m) : String(m)) + ":" + pad2(Math.floor(sec % 60))
+  }
 
   function clamp(x, hi) {
     var top = (hi !== undefined && hi !== null) ? hi : 999
@@ -66,6 +87,16 @@ BarWidget {
       lastProfile = s.last_profile || ""
       activeProfile = s.active_profile || ""
       range = s.range || {}
+      var t = s.timer || {}
+      timerEnabled = t.enabled === true
+      timerDefaultSec = t.default_sec || 1800
+      timerDeadline = t.deadline || 0
+      timerFiredAt = t.fired_at || 0
+      timerSuppressed = t.suppressed === true
+      nowSec = Date.now() / 1000
+      // 만료했는데 차단에 실패한 경우만 에러로 올린다 (코어가 다음 폴링에
+      // 자동 재시도하지만, 사용자는 즉시 알아야 한다)
+      if (s.timer_error) lastError = s.timer_error
       deviceAlias = (s.device && s.device.alias) ? s.device.alias : ""
       deviceId = (s.device && s.device.id) ? s.device.id : ""
       if (!s.connected) {
@@ -99,10 +130,11 @@ BarWidget {
   }
 
   function runAction(args) {
-    if (actionProc.running) return
+    if (actionProc.running) return false
     lastError = ""
     actionProc.command = [backendCommand].concat(args)
     actionProc.running = true
+    return true
   }
 
   function startScan() {
@@ -177,6 +209,27 @@ BarWidget {
     onTriggered: root.refreshNow()
   }
 
+  // 남은 시간 표시용 초 단위 틱. 팝업이 닫혀 있으면 그릴 게 없으므로 멈춘다
+  // (차단 자체는 QML이 아니라 코어가 하므로 이게 멈춰도 안전에는 영향 없음).
+  Timer {
+    interval: 1000
+    running: root.panelOpen
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.nowSec = Date.now() / 1000
+  }
+
+  // 기본 시간 스테퍼는 기기가 아니라 config만 건드리므로 포트 잠금 걱정이
+  // 없다 — 메인 뷰처럼 명시적 [적용]을 두는 대신 탭이 멎으면 자동 저장한다.
+  Timer {
+    id: defaultSaveTimer
+    interval: 600
+    onTriggered: {
+      if (!root.runAction(["timer", "default", String(root.timerDraftMin)]))
+        defaultSaveTimer.restart()   // 다른 명령 실행 중이면 조금 뒤 다시
+    }
+  }
+
   Timer {
     id: confirmTimer
     interval: 3000
@@ -194,6 +247,8 @@ BarWidget {
     lastError = ""
     confirmDelete = ""
     editing = false
+    nowSec = Date.now() / 1000
+    timerDraftMin = Math.round(timerDefaultSec / 60)
     refreshNow()
   }
 
@@ -327,6 +382,7 @@ BarWidget {
     property string caption: ""
     property string value: ""
     property string chipLabel: ""
+    property color valueTone: Qt.darker(Color.foreground, 1.3)
     signal activated()
 
     width: parent.width
@@ -336,7 +392,7 @@ BarWidget {
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
       text: caption + (value !== "" ? ": " + value : "")
-      color: Qt.darker(Color.foreground, 1.3)
+      color: valueTone
       font.family: Style.font.family
       font.pixelSize: Style.font.body
     }
@@ -393,6 +449,7 @@ BarWidget {
             text: root.view === "profiles" ? "프로필 관리"
                 : root.view === "devices" ? "기기 변경"
                 : root.view === "newProfile" ? "새 프로필"
+                : root.view === "timer" ? "타이머"
                 : root.deviceAlias !== "" ? root.deviceAlias
                 : root.model !== "" ? root.model : "PSU"
             color: Color.foreground
@@ -552,7 +609,36 @@ BarWidget {
             PanelSeparator { width: parent.width }
           }
 
-          // 프로필/기기 진입은 연결 여부와 무관하게 항상 가능
+          // 타이머가 방금 껐다는 안내 — 팝업을 닫아둔 사이에 일어났어도
+          // 열면 5분간 보인다 (그냥 꺼져 있으면 이유를 알 수 없으므로)
+          Text {
+            visible: root.timerFiredAt > 0 && (root.nowSec - root.timerFiredAt) < 300
+            width: parent.width
+            text: "󰔟 타이머가 만료되어 출력을 껐습니다"
+            color: Color.accent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            wrapMode: Text.WordWrap
+          }
+
+          // 프로필/기기/타이머 진입은 연결 여부와 무관하게 항상 가능
+          NavRow {
+            caption: "타이머"
+            value: !root.timerEnabled ? "사용 안 함"
+                 : root.timerRemaining >= 0 ? root.fmtDuration(root.timerRemaining) + " 남음"
+                 : root.timerSuppressed ? "이번엔 해제됨"
+                 : "대기 (" + Math.round(root.timerDefaultSec / 60) + "분)"
+            valueTone: root.timerRemaining >= 0
+                     ? (root.timerRemaining <= 60 ? Color.urgent : Color.accent)
+                     : Qt.darker(Color.foreground, 1.3)
+            chipLabel: "설정 »"
+            onActivated: {
+              root.timerDraftMin = Math.round(root.timerDefaultSec / 60)
+              root.view = "timer"
+            }
+          }
+
           NavRow {
             caption: "프로필"
             value: !root.connected
@@ -894,6 +980,138 @@ BarWidget {
             color: Qt.darker(Color.foreground, 1.4)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
+          }
+        }
+
+        // ═══════════════ timer 뷰 ═══════════════
+        // 출력 자동 차단 설정. 여기서는 기기를 전혀 건드리지 않는다 —
+        // 설정은 config.json, 무장 상태는 state.json 이고 집행은 코어의
+        // status 폴링이 한다. 그래서 오프라인에서도 조절할 수 있다.
+        Column {
+          visible: root.view === "timer"
+          width: parent.width
+          spacing: Style.space(8)
+
+          BackRow { onBack: root.view = "main" }
+
+          Text {
+            width: parent.width
+            text: "출력이 켜지면 정해둔 시간 뒤 자동으로 끕니다. GUI·CLI는 물론 "
+                + "기기 전면 패널이나 스마트플러그로 켜진 경우에도 걸립니다."
+            color: Qt.darker(Color.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Item {
+            width: parent.width
+            height: Style.space(26)
+
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "타이머 사용"
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+
+            ToggleSwitch {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: root.timerEnabled
+              busy: root.busy
+              onToggled: root.runAction(["timer",
+                                         root.timerEnabled ? "disable" : "enable"])
+            }
+          }
+
+          ValueRow {
+            caption: "기본 시간"
+            value: root.timerDraftMin + " 분"
+            step: 5
+            dimmed: !root.timerEnabled
+            highlight: root.timerDraftMin * 60 !== root.timerDefaultSec
+            onAdjust: function(delta) {
+              root.timerDraftMin = Math.max(1, Math.min(720, root.timerDraftMin + delta))
+              defaultSaveTimer.restart()
+            }
+          }
+
+          Text {
+            visible: root.timerRemaining >= 0
+                  && root.timerDraftMin * 60 !== root.timerDefaultSec
+            width: parent.width
+            text: "기본 시간은 다음 무장부터 적용됩니다 (지금 걸린 타이머는 그대로)"
+            color: Qt.darker(Color.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          PanelSeparator { width: parent.width; visible: root.timerEnabled }
+
+          // 무장 중 — 남은 시간과 즉석 조절
+          Column {
+            visible: root.timerEnabled && root.timerRemaining >= 0
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              text: root.fmtDuration(root.timerRemaining) + " 남음"
+              color: root.timerRemaining <= 60 ? Color.urgent : Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body * 1.5
+              font.bold: true
+            }
+
+            Row {
+              spacing: Style.space(6)
+
+              ActionChip { label: "+5분"; onActivated: root.runAction(["timer", "extend", "5"]) }
+              ActionChip { label: "−5분"; onActivated: root.runAction(["timer", "extend", "-5"]) }
+              ActionChip { label: "기본값"; onActivated: root.runAction(["timer", "arm"]) }
+              ActionChip {
+                label: "해제"
+                urgentStyle: true
+                onActivated: root.runAction(["timer", "disarm"])
+              }
+            }
+          }
+
+          // 무장 안 된 이유를 항상 설명한다 (조용히 아무것도 안 하는 상태 금지)
+          Text {
+            visible: root.timerEnabled && root.timerRemaining < 0
+            width: parent.width
+            text: root.timerSuppressed
+                ? "이번 출력 동안은 해제된 상태입니다 — 출력을 껐다 켜면 다시 걸립니다."
+                : "출력이 꺼져 있습니다 — 켜면 자동으로 "
+                  + Math.round(root.timerDefaultSec / 60) + "분 타이머가 걸립니다."
+            color: Qt.darker(Color.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            visible: !root.timerEnabled
+            width: parent.width
+            text: "타이머를 쓰지 않는 동안에는 출력이 저절로 꺼지지 않습니다."
+            color: Qt.darker(Color.foreground, 1.4)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            text: "차단은 위젯이 5초마다 기기를 확인할 때 이뤄집니다 — "
+                + "omarchy-shell 이 꺼져 있으면 동작하지 않습니다."
+            color: Qt.darker(Color.foreground, 1.7)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
         }
 

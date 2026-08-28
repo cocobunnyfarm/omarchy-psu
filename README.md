@@ -11,6 +11,8 @@ OWON SPE 시리즈 벤치 전원공급기 제어 — Omarchy 바 위젯 + 이식
     기기 값과 일치하는 프로필 자동 표시 — 튜닝하면 "자유 모드"
   - **새 프로필**: 드래프트 편집(기기 무영향) + 기기 범위 힌트/클램프
   - **기기 변경**: *IDN? 프로브 탐색, by-id 안정 경로로 저장
+  - **타이머**: 출력 자동 차단 — 켜두고 잊는 사고 방지. 사용 여부/기본
+    시간 설정, 무장 중 남은 시간은 메인에 표시되고 +5분·해제로 조절
 - 안전장치: 적용은 상식 검증 → 기기 범위 사전 검증 → readback 검증,
   중간 실패 시 이전 설정 롤백. 출력이 저절로 켜지는 경로 없음
 
@@ -30,7 +32,9 @@ bin/psu                     코어 위임 래퍼
 core/                       이식 가능한 코어 (순수 파이썬, 의존성 없음)
   psu_core.py                 전송 추상화(pyserial↔POSIX termios) +
                               OWON SPE SCPI 드라이버 + 포트 배타 잠금
-  psu_config.py               ~/.config/psu/config.json (기기 선택 + 프로필)
+  psu_config.py               ~/.config/psu/config.json (기기 선택 + 프로필
+                              + 타이머 설정) / state.json (무장 상태)
+  psu_timer.py                출력 자동 차단 타이머 정책
   psu_cli.py                  CLI
 scripts/                    로컬 개발 설치, 프로토콜 탐색, API 전수 테스트
 ```
@@ -52,8 +56,28 @@ psu profile save ROVER --note "로버 13.8V 계통"   # 현재 설정을 프로�
 psu profile apply ROVER    # 적용 (출력 ON이면 거부, --force로 무시)
 psu profile list / delete <이름>
 psu set --volt 5 --curr 1  # 여러 값을 한 번의 연결로 일괄 적용 (GUI '적용'이 사용)
+psu timer                  # 타이머 상태
+psu timer enable / disable # 사용 여부 (기본: 사용 안 함)
+psu timer default 30       # 기본 차단 시간(분)
+psu timer extend 5 / disarm # 무장 중 조절 / 이번 출력 동안 해제
 psu raw 'VOLT? MAX'        # 임의 SCPI (기기 한계 질의 등)
 ```
+
+## 출력 자동 차단 타이머
+
+켜둔 걸 잊어서 나는 사고를 막는 안전장치다. `psu timer enable` 로 켜두면
+**출력이 ON인 것이 관찰될 때마다** 기본 시간짜리 타이머가 자동으로 걸린다 —
+`psu on`/GUI 토글뿐 아니라 기기 전면 패널 조작이나 스마트플러그 AC 인가 후
+자동 출력까지 같은 경로로 커버된다. 출력을 끄면 타이머도 함께 내려간다.
+
+집행은 바 위젯이 주기적으로 부르는 `psu status` 안에서 이뤄진다. 팝업을
+닫아둬도, 셸을 재시작해도(무장 시각이 state.json 에 남으므로) 동작한다.
+**한계: omarchy-shell 이 떠 있지 않으면 아무도 끄지 않는다** — 기기에 자체
+타이머 기능이 없어 완전 보장은 불가능하다.
+
+설정(`enabled`/`default_sec`)은 config.json, 무장 상태(deadline)는 초 단위로
+바뀌므로 state.json 에 따로 둔다 (config/ 를 심볼릭 링크로 쓸 때 working
+tree가 계속 더러워지는 걸 피하려고).
 
 **프로필은 PSU가 아니라 부하(로버 등)에 연동된 개념**이라 기기 내부 저장
 슬롯 대신 `~/.config/psu/config.json`이 정본이다. 여러 PSU를 쓰면

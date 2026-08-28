@@ -1,4 +1,4 @@
-"""설정 파일 관리 — 기기 선택 + 워크로드 프로필.
+"""설정 파일 관리 — 기기 선택 + 워크로드 프로필 + 타이머 설정.
 
 ~/.config/psu/config.json 하나에 담는다 (코어 소유 — CLI/GUI가 공유,
 다른 OS에서도 그대로). 프로필은 PSU가 아니라 '전원을 줄 대상'(로버 등)에
@@ -10,9 +10,15 @@
   "selected_device": "<by-id 이름>",       # 현재 선택된 기기
   "devices": { "<by-id>": {"alias": "...", "baud": 115200} },  # 알려진 기기 전체
   "profiles": { "ROVER": {"volt":13.8,"curr":9.0,"vlim":14.2,"clim":9.2,"note":"..."} },
-  "last_profile": "ROVER"                   # 마지막으로 적용/저장한 프로필
+  "last_profile": "ROVER",                  # 마지막으로 적용/저장한 프로필
+  "timer": {"enabled": false, "default_sec": 1800}   # 출력 자동 차단
 }
+
+state.json은 따로다 (~/.config/psu/state.json): 타이머 무장 시각처럼
+초 단위로 바뀌는 런타임 값. config.json에 섞으면 이 저장소처럼
+config/ 를 심볼릭 링크로 쓸 때 working tree가 항상 더러워진다.
 """
+import copy
 import json
 import os
 
@@ -21,6 +27,7 @@ CONFIG_DIR = os.environ.get(
     os.path.join(os.environ.get("XDG_CONFIG_HOME",
                                 os.path.expanduser("~/.config")), "psu"))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
 
 BY_ID_DIR = "/dev/serial/by-id"
 
@@ -30,27 +37,49 @@ _DEFAULTS = {
     "devices": {},
     "profiles": {},
     "last_profile": None,
+    "timer": {"enabled": False, "default_sec": 1800},
 }
 
 
-def load():
+def _read_json(path):
     try:
-        with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
+        with open(path) as f:
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        cfg = {}
-    merged = dict(_DEFAULTS)
+        return {}
+
+
+def _write_json(path, data):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)   # 원자적 교체 — 폴링 중 읽어도 반쪽 파일이 없다
+
+
+def load():
+    cfg = _read_json(CONFIG_PATH)
+    # deepcopy: 얕은 복사면 호출부가 cfg["devices"] 등을 수정할 때
+    # 모듈 수준 _DEFAULTS 가 오염된다
+    merged = copy.deepcopy(_DEFAULTS)
     merged.update(cfg)
+    # timer 는 부분만 저장돼 있을 수 있어 키 단위로 덮어쓴다
+    merged["timer"] = dict(_DEFAULTS["timer"], **(cfg.get("timer") or {}))
     return merged
 
 
 def save(cfg):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    tmp = CONFIG_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, CONFIG_PATH)
+    _write_json(CONFIG_PATH, cfg)
+
+
+def load_state():
+    """런타임 상태 (타이머 무장 시각 등). 없으면 빈 dict."""
+    return _read_json(STATE_PATH)
+
+
+def save_state(state):
+    _write_json(STATE_PATH, state)
 
 
 def device_path(device_id):

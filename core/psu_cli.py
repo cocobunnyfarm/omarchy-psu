@@ -13,6 +13,8 @@
                              # 값 생략 시 기기의 현재 설정을 읽어 저장
   psu profile apply ROVER    # 적용 (출력 ON이면 거부; --force로 무시)
   psu profile delete ROVER
+  psu timer [show|enable|disable|default <분>|arm [분]|extend <분>|disarm]
+                             # 출력 자동 차단 (안전장치)
   psu idn / psu raw 'MEAS:VOLT?'
 
 포트 우선순위: --port > 선택된 기기(psu use) > 환경변수 PSU_PORT
@@ -26,6 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psu_config  # noqa: E402
+import psu_timer  # noqa: E402
 from psu_core import (OwonSPE, PsuError, apply_profile, apply_values,  # noqa: E402
                       probe, validate_profile)
 
@@ -59,11 +62,20 @@ def cmd_status(cfg, args):
             if entry is not None and "range" not in entry:
                 entry["range"] = psu.ranges()
                 psu_config.save(cfg)
+            # 타이머 집행 — 위젯이 팝업을 닫아둔 채로도 이 status 를 주기적
+            # 으로 부르므로, 그 폴링이 곧 자동 차단의 집행 시점이 된다.
+            _, fired, terr = psu_timer.sync(psu, cfg, s["output"])
+            if fired:
+                s["output"] = False   # 방금 껐으니 위에서 읽은 값은 낡았다
+            if terr:
+                base["timer_error"] = terr
         base["device"]["path"] = port
         base.update(s)
     except PsuError as e:
         base["error"] = str(e)
     base["range"] = entry.get("range") if entry else None
+    # 타이머는 기기 연결과 무관하게 읽히므로 항상 싣는다 (오프라인 표시용)
+    base["timer"] = psu_timer.snapshot(cfg)
     # active_profile: 기기의 현재 설정값과 일치하는 프로필 (last 우선,
     # 없으면 전체에서 탐색). 수동으로 하나라도 바꾸면 불일치 → null
     # (= 자유 모드). 프로필이 저절로 덮어써지는 경로는 없다 —
@@ -97,7 +109,8 @@ def cmd_status(cfg, args):
               f"설정: {st['volt']}V / {st['curr']}A  (리밋 {st['vlim']}V / {st['clim']}A)\n"
               f"실측: {m['volt']}V / {m['curr']}A / {m['pow']}W\n"
               f"프로필: {', '.join(base['profiles']) or '(없음)'}"
-              + (f"  [마지막: {base['last_profile']}]" if base["last_profile"] else ""))
+              + (f"  [마지막: {base['last_profile']}]" if base["last_profile"] else "")
+              + "\n" + psu_timer.describe(base["timer"]))
     return 0 if base["connected"] else 1
 
 
@@ -224,6 +237,34 @@ def cmd_profile(cfg, args):
     return 2
 
 
+def cmd_timer(cfg, args):
+    """타이머 설정/무장 조작. 전부 config·state 파일만 건드리므로 기기
+    연결이 필요 없다 (오프라인에서도 GUI에서 조절 가능)."""
+    cmd = args.tcmd or "show"
+    if cmd == "enable":
+        psu_timer.set_enabled(cfg, True)
+    elif cmd == "disable":
+        psu_timer.set_enabled(cfg, False)
+    elif cmd == "default":
+        psu_timer.set_default(cfg, args.minutes * 60)
+    elif cmd == "arm":
+        psu_timer.arm(cfg, args.minutes * 60 if args.minutes else None)
+    elif cmd == "disarm":
+        psu_timer.disarm(cfg, suppress=True)
+    elif cmd == "extend":
+        try:
+            psu_timer.extend(cfg, args.minutes * 60)
+        except ValueError as e:
+            print(f"오류: {e}", file=sys.stderr)
+            return 1
+    snap = psu_timer.snapshot(cfg)
+    if getattr(args, "json", False):
+        print(json.dumps(snap, ensure_ascii=False))
+    else:
+        print(psu_timer.describe(snap))
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(prog="psu", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -254,6 +295,20 @@ def main():
     pd = pfsub.add_parser("delete")
     pd.add_argument("name")
 
+    tm = sub.add_parser("timer", help="출력 자동 차단 타이머")
+    tmsub = tm.add_subparsers(dest="tcmd")
+    ts = tmsub.add_parser("show", help="현재 상태")
+    ts.add_argument("--json", action="store_true")
+    tmsub.add_parser("enable", help="타이머 사용 (출력 ON 감지 시 자동 무장)")
+    tmsub.add_parser("disable", help="타이머 사용 안 함")
+    td = tmsub.add_parser("default", help="기본 차단 시간(분)")
+    td.add_argument("minutes", type=int)
+    ta = tmsub.add_parser("arm", help="지금부터 N분 뒤로 무장 (생략 시 기본값)")
+    ta.add_argument("minutes", type=int, nargs="?", default=None)
+    te = tmsub.add_parser("extend", help="남은 시간 조정(분, 음수 가능)")
+    te.add_argument("minutes", type=int)
+    tmsub.add_parser("disarm", help="무장 해제")
+
     se = sub.add_parser("set", help="여러 값을 한 번의 연결로 적용 (안전 순서)")
     for f in ("volt", "curr", "vlim", "clim"):
         se.add_argument(f"--{f}", type=float, default=None)
@@ -282,6 +337,8 @@ def main():
             sys.exit(cmd_use(cfg, args))
         if args.cmd == "profile":
             sys.exit(cmd_profile(cfg, args))
+        if args.cmd == "timer":
+            sys.exit(cmd_timer(cfg, args))
 
         psu, _ = open_psu(cfg, args)
         with psu:

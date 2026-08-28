@@ -2,11 +2,13 @@
   "schemaVersion": 1,
   "id": "io.github.cocobunnyfarm.psu",
   "name": "PSU Control",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "author": "cocobunnyfarm",
   "license": "MIT",
-  "description": "OWON SPE 벤치 전원공급기 제어 — 출력 토글, 전압/전류 조정, 실측 모니터링. 기기 통신은 번들된 psu CLI(이식 가능한 코어)에 위임.",
-  "kinds": ["bar-widget"],
+  "description": "OWON SPE 벤치 전원공급기 제어 — 출력 토글, 전압/전류 조정, 실측 모니터링, 출력 자동 차단 타이머. 기기 통신은 번들된 psu CLI(이식 가능한 코어)에 위임.",
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "Widget.qml"
   },
