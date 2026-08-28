@@ -43,8 +43,16 @@ def settings(cfg):
 
 
 def set_enabled(cfg, on):
-    cfg.setdefault("timer", dict(_SETTING_DEFAULTS))["enabled"] = bool(on)
-    if not on:
+    """사용 여부 토글. GUI에서 켜고 끄는 유일한 스위치다.
+
+    상태가 바뀌면 이전 무장/보류 흔적을 지운다 — 켤 때도 지워야 예전에
+    `psu timer disarm` 으로 남겨둔 보류 때문에 '토글은 켜짐인데 타이머는
+    안 걸림' 이 되지 않는다.
+    """
+    t = cfg.setdefault("timer", dict(_SETTING_DEFAULTS))
+    changed = bool(t.get("enabled", False)) != bool(on)
+    t["enabled"] = bool(on)
+    if changed:
         disarm(cfg)
     psu_config.save(cfg)
 

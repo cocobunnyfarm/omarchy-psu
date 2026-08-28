@@ -93,6 +93,9 @@ BarWidget {
       timerDeadline = t.deadline || 0
       timerFiredAt = t.fired_at || 0
       timerSuppressed = t.suppressed === true
+      // 저장 대기 중(탭이 아직 멎지 않음)이 아니면 드래프트는 정본을 따른다 —
+      // 안 그러면 밖에서 값이 바뀌었을 때 '변경 대기' 강조가 헛되이 남는다
+      if (!defaultSaveTimer.running) timerDraftMin = Math.round(timerDefaultSec / 60)
       nowSec = Date.now() / 1000
       // 만료했는데 차단에 실패한 경우만 에러로 올린다 (코어가 다음 폴링에
       // 자동 재시도하지만, 사용자는 즉시 알아야 한다)
@@ -1027,6 +1030,16 @@ BarWidget {
             }
           }
 
+          Text {
+            visible: root.timerRemaining >= 0
+            width: parent.width
+            text: "끄면 지금 걸린 타이머도 함께 해제됩니다."
+            color: Qt.darker(Color.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
           ValueRow {
             caption: "기본 시간"
             value: root.timerDraftMin + " 분"
@@ -1069,29 +1082,40 @@ BarWidget {
             Row {
               spacing: Style.space(6)
 
+              // 끄는 건 위의 '타이머 사용' 토글 하나가 맡는다. 여기에 '해제'를
+              // 또 두면 토글은 켜짐인데 타이머는 없는 상태가 생겨 둘이 어긋난다.
               ActionChip { label: "+5분"; onActivated: root.runAction(["timer", "extend", "5"]) }
               ActionChip { label: "−5분"; onActivated: root.runAction(["timer", "extend", "-5"]) }
               ActionChip { label: "기본값"; onActivated: root.runAction(["timer", "arm"]) }
-              ActionChip {
-                label: "해제"
-                urgentStyle: true
-                onActivated: root.runAction(["timer", "disarm"])
-              }
             }
           }
 
           // 무장 안 된 이유를 항상 설명한다 (조용히 아무것도 안 하는 상태 금지)
-          Text {
+          Column {
             visible: root.timerEnabled && root.timerRemaining < 0
             width: parent.width
-            text: root.timerSuppressed
-                ? "이번 출력 동안은 해제된 상태입니다 — 출력을 껐다 켜면 다시 걸립니다."
-                : "출력이 꺼져 있습니다 — 켜면 자동으로 "
-                  + Math.round(root.timerDefaultSec / 60) + "분 타이머가 걸립니다."
-            color: Qt.darker(Color.foreground, 1.4)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+            spacing: Style.space(6)
+
+            Text {
+              width: parent.width
+              // suppressed 는 GUI로는 만들 수 없는 상태다 (psu timer disarm 으로만).
+              // 그래도 코어가 그 상태면 이유를 밝히고 되돌릴 길을 준다.
+              text: root.timerSuppressed
+                  ? "이번 출력 동안은 해제된 상태입니다 (psu timer disarm) — "
+                    + "출력을 껐다 켜거나 아래 버튼으로 다시 겁니다."
+                  : "출력이 꺼져 있습니다 — 켜면 자동으로 "
+                    + Math.round(root.timerDefaultSec / 60) + "분 타이머가 걸립니다."
+              color: Qt.darker(Color.foreground, 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            ActionChip {
+              visible: root.timerSuppressed
+              label: "다시 걸기"
+              onActivated: root.runAction(["timer", "arm"])
+            }
           }
 
           Text {
