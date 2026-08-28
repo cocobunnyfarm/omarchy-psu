@@ -997,16 +997,6 @@ BarWidget {
 
           BackRow { onBack: root.view = "main" }
 
-          Text {
-            width: parent.width
-            text: "출력이 켜지면 정해둔 시간 뒤 자동으로 끕니다. GUI·CLI는 물론 "
-                + "기기 전면 패널이나 스마트플러그로 켜진 경우에도 걸립니다."
-            color: Qt.darker(Color.foreground, 1.4)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
           Item {
             width: parent.width
             height: Style.space(26)
@@ -1030,16 +1020,6 @@ BarWidget {
             }
           }
 
-          Text {
-            visible: root.timerRemaining >= 0
-            width: parent.width
-            text: "끄면 지금 걸린 타이머도 함께 해제됩니다."
-            color: Qt.darker(Color.foreground, 1.5)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
           ValueRow {
             caption: "기본 시간"
             value: root.timerDraftMin + " 분"
@@ -1052,18 +1032,7 @@ BarWidget {
             }
           }
 
-          Text {
-            visible: root.timerRemaining >= 0
-                  && root.timerDraftMin * 60 !== root.timerDefaultSec
-            width: parent.width
-            text: "기본 시간은 다음 무장부터 적용됩니다 (지금 걸린 타이머는 그대로)"
-            color: Qt.darker(Color.foreground, 1.5)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
-          PanelSeparator { width: parent.width; visible: root.timerEnabled }
+          PanelSeparator { width: parent.width; visible: root.timerRemaining >= 0 }
 
           // 무장 중 — 남은 시간과 즉석 조절
           Column {
@@ -1090,53 +1059,6 @@ BarWidget {
             }
           }
 
-          // 무장 안 된 이유를 항상 설명한다 (조용히 아무것도 안 하는 상태 금지)
-          Column {
-            visible: root.timerEnabled && root.timerRemaining < 0
-            width: parent.width
-            spacing: Style.space(6)
-
-            Text {
-              width: parent.width
-              // suppressed 는 GUI로는 만들 수 없는 상태다 (psu timer disarm 으로만).
-              // 그래도 코어가 그 상태면 이유를 밝히고 되돌릴 길을 준다.
-              text: root.timerSuppressed
-                  ? "이번 출력 동안은 해제된 상태입니다 (psu timer disarm) — "
-                    + "출력을 껐다 켜거나 아래 버튼으로 다시 겁니다."
-                  : "출력이 꺼져 있습니다 — 켜면 자동으로 "
-                    + Math.round(root.timerDefaultSec / 60) + "분 타이머가 걸립니다."
-              color: Qt.darker(Color.foreground, 1.4)
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-
-            ActionChip {
-              visible: root.timerSuppressed
-              label: "다시 걸기"
-              onActivated: root.runAction(["timer", "arm"])
-            }
-          }
-
-          Text {
-            visible: !root.timerEnabled
-            width: parent.width
-            text: "타이머를 쓰지 않는 동안에는 출력이 저절로 꺼지지 않습니다."
-            color: Qt.darker(Color.foreground, 1.4)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
-          Text {
-            width: parent.width
-            text: "차단은 위젯이 5초마다 기기를 확인할 때 이뤄집니다 — "
-                + "omarchy-shell 이 꺼져 있으면 동작하지 않습니다."
-            color: Qt.darker(Color.foreground, 1.7)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
         }
 
         // ═══ 에러 박스 (항상 맨 아래) ═══
